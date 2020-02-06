@@ -1,16 +1,32 @@
 define(function(require) {
-  var echarts = require("echarts");
+  // Default constants
+  const ECHARTS_DAGRE_DEFAULT = {
+    usingZoom: true,
+    layout: {
+      rankdir: "TB",
+      edgesep: 100,
+      ranksep: 300
+    },
+    aspect: {
+      maxNodeSymbolSize: 80
+    }
+  };
+  const DEFAULT_SCALE = 1;
+
   var dagre = require("dagre");
 
   window.echarts.registerLayout(function(ecModel, api) {
     ecModel.eachSeriesByType("graph", function(seriesModel) {
       var layout = seriesModel.get("layout");
+      var echartsDagre = _.defaultsDeep(
+        seriesModel.get("echartsDagre"),
+        ECHARTS_DAGRE_DEFAULT
+      );
       var graph = seriesModel.getGraph();
-      console.log("[echarts-dagre] - graph", graph);
+      // console.log("[echarts-dagre] - graph", graph);
       var dagreGraph = new dagre.graphlib.Graph();
       var coordSys = seriesModel.coordinateSystem;
       var viewRect = coordSys.getViewRect();
-      let topNodesCount = 0;
       if (!coordSys || coordSys.type !== "view") {
         throw new Error("Dagre layout not support coordinate system.");
       }
@@ -22,46 +38,41 @@ define(function(require) {
         return {};
       });
       if (layout === "dagre") {
+        let topNodesCount = 0;
         let allNodesAreTopNodes = true;
+        let nodeIndex = 0;
         graph.eachNode(function(node) {
-          var itemModel = node.getModel();
-          // TODO Use getVisual
-          var symbolSize = itemModel.get("symbolSize");
-          if (!(symbolSize instanceof Array)) {
-            symbolSize = [symbolSize, symbolSize];
-          }
-          dagreGraph.setNode(node.id, {
+          // Fill dagreGraph with echarts nodes
+          dagreGraph.setNode(nodeIndex, {
             id: node.id
           });
+          // Count how many top nodes are
           if (!isNaN(node.id)) {
             topNodesCount++;
           }
+          // Flag: indicates if all nodes to show are top nodes
           if (allNodesAreTopNodes && isNaN(node.id)) {
             allNodesAreTopNodes = false;
           }
+          nodeIndex++;
         });
 
-        console.log(
-          "[echarts-dagre] - dagreGraph.nodeCount",
-          dagreGraph.nodeCount()
-        );
-
+        // Fill dagreGraph with the edges
         graph.eachEdge(function(edge) {
-          dagreGraph.setEdge(edge.node1.id, edge.node2.id);
+          dagreGraph.setEdge(edge.node1.dataIndex, edge.node2.dataIndex);
         });
 
-        dagreGraph.graph().rankdir = "TB";
-        dagreGraph.graph().edgesep = 100;
-        dagreGraph.graph().ranksep = 300;
+        // dagreGraph layout options https://github.com/dagrejs/dagre/wiki
+        dagreGraph.graph().rankdir = echartsDagre.layout.rankdir;
+        dagreGraph.graph().edgesep = echartsDagre.layout.edgesep;
+        dagreGraph.graph().ranksep = echartsDagre.layout.ranksep;
         if (allNodesAreTopNodes) {
           dagreGraph.graph().nodesep = viewRect.width / dagreGraph.nodeCount();
-          // dagreGraph.graph().marginx = dagreGraph.graph().nodesep / 2;
-          // dagreGraph.graph().marginy = viewRect.height / 2;
         }
+        // Calculate all the coordinates
         dagre.layout(dagreGraph);
 
-        console.log("[echarts-dagre] - dagreGraph", dagreGraph);
-
+        // Start the logic to fill the coordinates in the echarts graph
         var xMin = Infinity;
         var yMin = Infinity;
         var xMax = -Infinity;
@@ -73,38 +84,77 @@ define(function(require) {
         let nodeMaxX = 0;
         let nodeMinX = 0;
 
+        const sortedCoordinates = {};
+        const levels = {};
+
+        // Sort coordinates after dagre calculation. This is needed because dagre code use an heuristic algorithim
+        // and the coordinates are not in order
         dagreGraph.nodes().forEach(function(node, idx) {
-          node = dagreGraph.node(node);
-          nodeMinX = Math.min(nodeMinX, node.x);
-          nodeMaxX = Math.max(nodeMaxX, node.x);
+          const dagreNode = dagreGraph.node(node);
+          nodeMinX = Math.min(nodeMinX, dagreNode.x);
+          nodeMaxX = Math.max(nodeMaxX, dagreNode.x);
+          if (!sortedCoordinates[dagreNode.y]) {
+            sortedCoordinates[dagreNode.y] = [dagreNode.x];
+            levels[dagreNode.y] = 0;
+          } else {
+            sortedCoordinates[dagreNode.y].push(dagreNode.x);
+            levels[dagreNode.y]++;
+          }
+        });
+        Object.keys(sortedCoordinates).forEach(function(key) {
+          sortedCoordinates[key].sort((a, b) => a - b);
+
+          // TODO: Try to add more separation between nodes
+          /* sortedCoordinates[key].forEach(function(coordinate, idx) {
+            if (idx > 0) {
+              sortedCoordinates[key][idx] = sortedCoordinates[key][idx - 1] + (echartsDagre.aspect.maxNodeSymbolSize);
+            }
+          }); */
         });
 
-        console.log(
-          "[echarts-dagre] - nodeMinX - nodeMaxX",
-          nodeMinX,
-          "-",
-          nodeMaxX
-        );
-
+        // Get the dagreGraph information and set into the echarts nodeData
         const topNodeSep = (nodeMaxX - nodeMinX) / topNodesCount;
-        let topNodeMarg = topNodeSep / 2;
-        for (let index = 0; index < nodeData.count(); index++) {
-          const echartsNode = nodeData.getRawDataItem(index);
-          const dagreNode = dagreGraph.node(echartsNode.name);
+        let topNodeMargX = topNodeSep / 2;
+        let symbolSize = echartsDagre.aspect.maxNodeSymbolSize;
+        const copyOfLevels = _.cloneDeep(levels);
+        dagreGraph.nodes().forEach(function(node, idx) {
+          const dagreNode = dagreGraph.node(node);
+
+          dagreNode.x =
+            sortedCoordinates[dagreNode.y][
+              levels[dagreNode.y] - copyOfLevels[dagreNode.y]
+            ];
+          copyOfLevels[dagreNode.y]--;
 
           if (!allNodesAreTopNodes && !isNaN(dagreNode.id)) {
-            dagreNode.x = topNodeMarg;
-            topNodeMarg += topNodeSep;
+            dagreNode.x = topNodeMargX;
+            topNodeMargX += topNodeSep;
           }
 
-          nodeData.setItemLayout(index, [dagreNode.x, dagreNode.y]);
+          // TODO: Review this code to calculate the symbol size
+          const calculateSymbolSize = function(nodesNumber) {
+            const maxSize = echartsDagre.aspect.maxNodeSymbolSize;
+            const separation = nodeMaxX / nodesNumber;
+            if (separation / 2 > maxSize) {
+              return maxSize;
+            } else {
+              return separation / 2;
+            }
+          };
+
+          symbolSize = Math.min(
+            symbolSize,
+            calculateSymbolSize(sortedCoordinates[dagreNode.y].length)
+          );
+          nodeData.setItemLayout(idx, [dagreNode.x, dagreNode.y]);
+          nodeData.setItemVisual(idx, "symbolSize", symbolSize);
 
           xMin = Math.min(xMin, dagreNode.x);
           yMin = Math.min(yMin, dagreNode.y);
 
           xMax = Math.max(xMax, dagreNode.x);
           yMax = Math.max(yMax, dagreNode.y);
-        }
+        });
 
         dagreGraph.edges().forEach(function(edge, idx) {
           var n1 = dagreGraph.node(edge.v);
@@ -130,70 +180,44 @@ define(function(require) {
           edgeData.setItemLayout(idx, points);
         });
 
-        console.log(
-          "[echarts-dagre] - coordSys.getCenter, coordSys.getZoom",
-          coordSys.getCenter(),
-          coordSys.getZoom()
-        );
-        console.log(
-          "[echarts-dagre] - coordSys.getRoamTransform",
-          coordSys.getRoamTransform()
-        );
-
-        const newCenter = [xMax / 2, yMax / 2];
-        console.log("[echarts-dagre] - newCenter", newCenter);
-        coordSys.setCenter(newCenter);
-
-        console.log(
-          "[echarts-dagre] - viewRect",
-          viewRect.width,
-          viewRect.height,
-          viewRect
-        );
-
-        const dstWidth = viewRect.width;
-        const srcWidth = xMax;
-        let scale = dstWidth / srcWidth;
-        if (yMax * scale > viewRect.height) {
-          scale = viewRect.height / yMax;
-        }
-        if (scale > 1) {
-          scale = 1;
-        } else {
-          scale -= 0.008;
-        }
-        console.log("[echarts-dagre] - scale", scale);
-
-        const graphArea = xMax * yMax;
-        const viewArea = viewRect.width * viewRect.height;
-        const areaFactor = viewArea / graphArea > 1 ? 1 : 0.42;
-        console.log(
-          "[echarts-dagre] - graphArea, viewArea, areaFactor",
-          graphArea,
-          viewArea,
-          areaFactor
-        );
-        coordSys.setZoom(scale);
         // Keep aspect
-        /*var aspect = (xMax - xMin) / (yMax - yMin);
-        var viewAspect = viewRect.width / viewRect.height;
-        if (aspect > viewAspect) {
-          var newHeight = viewRect.width / aspect;
-          viewRect.y += (viewRect.height - newHeight) / 2;
-          viewRect.height = newHeight;
+        if (echartsDagre.usingZoom) {
+          // Using zoom to center the nodes inside the canvas
+          const newCenter = [xMax / 2, yMax / 2];
+          coordSys.setCenter(newCenter);
+
+          const dstWidth = viewRect.width - 10;
+          const srcWidth = xMax + echartsDagre.aspect.maxNodeSymbolSize * 2;
+          let scale = dstWidth / srcWidth;
+          if (yMax * scale > viewRect.height) {
+            scale = viewRect.height / yMax;
+          }
+          if (scale > DEFAULT_SCALE) {
+            scale = DEFAULT_SCALE;
+          }
+          coordSys.setZoom(scale);
         } else {
-          var newWidth = viewRect.height * aspect;
-          viewRect.x += (viewRect.width - newWidth) / 2;
-          viewRect.width = newWidth;
-        }*/
-        // Reset bounding rect
-        // coordSys.setBoundingRect(xMin, yMin, xMax - xMin, yMax - yMin);
-        /*coordSys.setViewRect(
-          viewRect.x,
-          viewRect.y,
-          viewRect.width,
-          viewRect.height
-        );*/
+          // Using coordSys to adapt all the graph size to the canvas without zoom
+          var aspect = (xMax - xMin) / (yMax - yMin);
+          var viewAspect = viewRect.width / viewRect.height;
+          if (aspect > viewAspect) {
+            var newHeight = viewRect.width / aspect;
+            viewRect.y += (viewRect.height - newHeight) / 2;
+            viewRect.height = newHeight;
+          } else {
+            var newWidth = viewRect.height * aspect;
+            viewRect.x += (viewRect.width - newWidth) / 2;
+            viewRect.width = newWidth;
+          }
+          // Reset bounding rect
+          coordSys.setBoundingRect(xMin, yMin, xMax - xMin, yMax - yMin);
+          coordSys.setViewRect(
+            viewRect.x,
+            viewRect.y,
+            viewRect.width,
+            viewRect.height
+          );
+        }
       }
     });
   });

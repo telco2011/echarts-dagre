@@ -1,25 +1,17 @@
 # ECharts graph layout extension integrated with dagre.js
 
+## Install
 
-### Install
-
-```html
-<script src="echarts.min.js"></script>
-<script src="echarts-dagre.min.js"></script>
-```
-
-Or
-
-```
-npm install echarts-dagre
+```shell
+npm install https://github.com/telco2011/echarts-dagre
 ```
 
 ```js
-var echarts = require('echarts');
-require('echarts-dagre');
+var echarts = require("echarts");
+require("echarts-dagre");
 ```
 
-### Usage
+## Usage
 
 ```js
 
@@ -30,9 +22,13 @@ chart.setOption({
     series: [{
         type: 'graph',
         // Change the layout to dagre, that's all you need to do.
-        layout: 'dagre',
-        nodes: [...],
-        links: [...]
+        layout: 'dagre'
     }]
 });
 ```
+
+## Annex
+
+- [Original echarts-dagre](https://github.com/ecomfe/echarts-dagre)
+- [Dagre Wiki Documentation](https://github.com/dagrejs/dagre/wiki)
+- [Graphlib API Reference](https://github.com/dagrejs/graphlib/wiki/API-Reference)
